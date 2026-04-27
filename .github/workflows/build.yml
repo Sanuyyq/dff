@@ -103,10 +103,13 @@ jobs:
           #   aarch: arm64
           #   targets: deb,gz
             
-          - platform: macos
-            os: macos-15
-            aarch: universal
-            targets: dmg,pkg
+          # macOS disabled in fork: requires Apple Developer certificates ($99/yr).
+          # Re-enable when secrets APPLE_CERTIFICATE_P12 / APPLE_CERTIFICATE_P12_PASSWORD
+          # / APPLE_MOBILE_PROVISIONING_PROFILES_TARGZ_BASE64 are set.
+          # - platform: macos
+          #   os: macos-15
+          #   aarch: universal
+          #   targets: dmg,pkg
             
           # - platform: ios
           #   os: macos-15
@@ -218,18 +221,34 @@ jobs:
 
       - name: Setup Android Signing Properties
         if: ${{ inputs.upload-artifact && startsWith(matrix.platform,'android') }}
+        env:
+          SIGNING_KEY: ${{ secrets.ANDROID_SIGNING_KEY }}
+          SIGNING_STORE_PASSWORD: ${{ secrets.ANDROID_SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.ANDROID_SIGNING_KEY_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.ANDROID_SIGNING_KEY_ALIAS }}
         run: |
-          echo "${{ secrets.ANDROID_SIGNING_KEY }}" | base64 --decode > android/key.jks
+          if [ -z "$SIGNING_KEY" ]; then
+            echo "::warning::ANDROID_SIGNING_KEY secret is empty — release APK will be signed with the default debug keystore (NOT publishable on Google Play)."
+            exit 0
+          fi
+          echo "$SIGNING_KEY" | base64 --decode > android/key.jks
           echo "storeFile=$(pwd)/android/key.jks" > android/key.properties
-          echo "storePassword=${{ secrets.ANDROID_SIGNING_STORE_PASSWORD }}" >> android/key.properties
-          echo "keyPassword=${{ secrets.ANDROID_SIGNING_KEY_PASSWORD }}" >> android/key.properties
-          echo "keyAlias=${{ secrets.ANDROID_SIGNING_KEY_ALIAS }}" >> android/key.properties
+          echo "storePassword=$SIGNING_STORE_PASSWORD" >> android/key.properties
+          echo "keyPassword=$SIGNING_KEY_PASSWORD" >> android/key.properties
+          echo "keyAlias=$SIGNING_KEY_ALIAS" >> android/key.properties
 
       - name: Setup Windows Signing Properties
         if: ${{ inputs.upload-artifact && startsWith(matrix.platform,'windows') }}
+        env:
+          WIN_KEY: ${{ secrets.WINDOWS_SIGNING_KEY }}
+          WIN_PASS: ${{ secrets.WINDOWS_SIGNING_PASSWORD }}
         run: |
-            [IO.File]::WriteAllBytes("windows\sign.pfx", [Convert]::FromBase64String("${{ secrets.WINDOWS_SIGNING_KEY }}"))
-            (Get-Content "windows\packaging\msix\make_config.yaml") -replace '^certificate_password:.*$', 'certificate_password: ${{ secrets.WINDOWS_SIGNING_PASSWORD }}' | Set-Content "windows\packaging\msix\make_config.yaml"
+            if ([string]::IsNullOrEmpty($env:WIN_KEY)) {
+              Write-Host "::warning::WINDOWS_SIGNING_KEY secret is empty — Windows artifacts will be unsigned."
+              exit 0
+            }
+            [IO.File]::WriteAllBytes("windows\sign.pfx", [Convert]::FromBase64String($env:WIN_KEY))
+            (Get-Content "windows\packaging\msix\make_config.yaml") -replace '^certificate_password:.*$', "certificate_password: $env:WIN_PASS" | Set-Content "windows\packaging\msix\make_config.yaml"
         
       # - name: Temporary disable Permission Handler for windows due to its issue in permission
       #   if: ${{ startsWith(matrix.platform,'windows') }}
@@ -254,7 +273,9 @@ jobs:
           make ${{ matrix.platform }}-release
 
       - name: Code Sign
-        if: ${{ inputs.upload-artifact && startsWith(matrix.platform,'windows') }}
+        if: ${{ inputs.upload-artifact && startsWith(matrix.platform,'windows') && env.HAS_WIN_KEY == 'true' }}
+        env:
+          HAS_WIN_KEY: ${{ secrets.WINDOWS_SIGNING_KEY != '' }}
         uses: hiddify/signtool-code-sign-sha256@main
         with:
           certificate: '${{ secrets.WINDOWS_SIGNING_KEY }}'
@@ -263,7 +284,7 @@ jobs:
           folder: 'dist'
           timestamp-server: 'http://timestamp.digicert.com'
           recursive: true
-          description: 'Hiddify'
+          description: 'Negern VPN'
 
       - name: Copy to out Windows
         if: matrix.platform == 'windows'
@@ -332,9 +353,9 @@ jobs:
             ls tmp_out
             [[ "$EXT" != "gz" ]] && chmod +x tmp_out/${FILENAME}.$EXT || echo "Skipping chmod for gz"
             if [ "${{matrix.platform}}" == "linux" ];then
-              cp ./.github/help/linux/* tmp_out/
+              cp ./.github/help/linux/* tmp_out/ 2>/dev/null || echo "::warning::no help files for linux"
             else
-              cp ./.github/help/mac-windows/* tmp_out/
+              cp ./.github/help/mac-windows/* tmp_out/ 2>/dev/null || echo "::warning::no help files for mac-windows"
             fi
             if [[ "${{matrix.platform}}" == 'ios' ]];then
               echo mv tmp_out/${FILENAME}.$EXT out/
@@ -383,10 +404,11 @@ jobs:
           
 
       - name: Display Files Structure
-        run: ls -R
+        run: ls -R || true
         working-directory: ./out
 
       - name: Delete Current Release Assets
+        continue-on-error: true
         uses: 8Mi-Tech/delete-release-assets-action@main
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -414,11 +436,15 @@ jobs:
           body_path: './release.md'
           prerelease: true
 
-      - name: Create or Update Draft Release
-        uses: softprops/action-gh-release@v2
+      # Push to upstream hiddify/hiddify-app is disabled in fork.
+      # Re-enable only if you genuinely have write access there.
+      - name: Create or Update Draft Release (upstream hiddify-app)
+        if: ${{ env.HAS_UPSTREAM_TOKEN == 'true' }}
         env:
           GITHUB_TOKEN: ${{ secrets.TOKEN_FOR_HIDDIFY_APP_REPO }}
           GITHUB_REPOSITORY: hiddify/hiddify-app
+          HAS_UPSTREAM_TOKEN: ${{ secrets.TOKEN_FOR_HIDDIFY_APP_REPO != '' }}
+        uses: softprops/action-gh-release@v2
         with:
           files: ./out/*
           name: 'draft'
@@ -468,13 +494,19 @@ jobs:
           files: ./out/*
 
       - name: Create service_account.json
+        if: ${{ env.HAS_GP_KEY == 'true' }}
+        env:
+          HAS_GP_KEY: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON != '' }}
         run: echo '${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}' > service_account.json
 
       - name: Deploy to Google Play Internal Testers
+        if: ${{ env.HAS_GP_KEY == 'true' }}
+        env:
+          HAS_GP_KEY: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON != '' }}
         uses: r0adkll/upload-google-play@v1
         with:
           serviceAccountJson: service_account.json
-          packageName: app.hiddify.com
+          packageName: com.negern.vpn
           releaseName: ${{ env.TAG_NAME }}
           releaseFiles: ./Negern-Android-market.aab
           track: 'beta'

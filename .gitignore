@@ -13,7 +13,6 @@
 .svn/
 .swiftpm/
 migrate_working_dir/
-.github/help
 # IntelliJ related
 *.iml
 *.ipr

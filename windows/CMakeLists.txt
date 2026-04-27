@@ -85,13 +85,15 @@ install(FILES "${FLUTTER_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
 #  COMPONENT Runtime)
 
 install(FILES "../hiddify-core/bin/hiddify-core.dll" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
-COMPONENT Runtime RENAME hiddify-core.dll)
+COMPONENT Runtime RENAME hiddify-core.dll OPTIONAL)
 
+# libcronet.dll is no longer shipped in newer hiddify-core releases; mark OPTIONAL
+# so missing file does not fail the INSTALL step.
 install(FILES "../hiddify-core/bin/libcronet.dll" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
-COMPONENT Runtime RENAME libcronet.dll)
+COMPONENT Runtime RENAME libcronet.dll OPTIONAL)
 
 install(FILES "../hiddify-core/bin/HiddifyCli.exe" DESTINATION "${CMAKE_INSTALL_PREFIX}"
-COMPONENT Runtime RENAME HiddifyCli.exe)
+COMPONENT Runtime RENAME HiddifyCli.exe OPTIONAL)
 
 
 if(PLUGIN_BUNDLED_LIBRARIES)
